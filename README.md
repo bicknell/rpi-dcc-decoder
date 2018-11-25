@@ -7,7 +7,7 @@ on the screen.  As-is it is a "DCC Sniffer", but with minor
 modification could be used to turn the Raspberry Pi into a stationary
 decoder.
 
-See HARDWARE for the circuit design to connect a Raspberry Pi to 
+See [HARDWARE.md](HARDWARE.md) for the circuit design to connect a Raspberry Pi to 
 the tracks of an NMRA compliant DCC system.
 
 The software uses the [pigpio](http://abyz.me.uk/rpi/pigpio/) library.
