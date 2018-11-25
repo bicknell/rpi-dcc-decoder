@@ -14,3 +14,13 @@ The software uses the [pigpio](http://abyz.me.uk/rpi/pigpio/) library.
 Inspired by [Frequency Counter 1](http://abyz.me.uk/rpi/pigpio/code/freq_count_1.zip).
 
 This software is under the BSD 2-clause license, see LICENSE.
+
+## Building
+
+`make`
+
+## Running
+
+`./dcc_decode 5 -s1`
+
+Runs on GPIO 5, with a 1us poller.  Use 1us for the best performance.
