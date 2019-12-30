@@ -37,10 +37,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #define MAX_BITS 64
 
 /* Timing values found via trial and error */
-#define TICKS_MIN_DCC_ONE 15
-#define TICKS_MAX_DCC_ONE 35
-#define TICKS_MIN_DCC_ZERO 70
-#define TICKS_MAX_DCC_ZERO 90
+/* Remember, zeros s t r e t c h */
+#define TICKS_MIN_DCC_ONE 12
+#define TICKS_MAX_DCC_ONE 38
+#define TICKS_MIN_DCC_ZERO 68
+#define TICKS_MAX_DCC_ZERO 150
 
 #define OPT_R_MIN 1
 #define OPT_R_MAX 300
@@ -209,7 +210,7 @@ void edges(int gpio, int level, uint32_t tick)
        }   
 
        /* Is it in range to be a DCC ONE? */
-       if (difference > TICKS_MIN_DCC_ONE && difference < TICKS_MAX_DCC_ONE) {
+       if (difference >= TICKS_MIN_DCC_ONE && difference <= TICKS_MAX_DCC_ONE) {
            l_gpio_data[gpio].dcc_one++;
 
            /* If we're in the PREAMBLE state, count ones */
@@ -315,7 +316,7 @@ void edges(int gpio, int level, uint32_t tick)
                                    printf(" direction %c, speed (128ss) E-STOP", l_gpio_data[gpio].bits[i+1] & 0x80 ? 'F' : 'R');
                                } else {
                                    printf(" direction %c, speed (128ss) %d", 
-                                          l_gpio_data[gpio].bits[i+1] & 0x80 ? 'F' : 'R', (l_gpio_data[gpio].bits[i+1] & 0x7F) >> 1);
+                                          l_gpio_data[gpio].bits[i+1] & 0x80 ? 'F' : 'R', l_gpio_data[gpio].bits[i+1] & 0x7F);
                                }
                                i++;
                                break; 
@@ -413,7 +414,7 @@ void edges(int gpio, int level, uint32_t tick)
            }
 
        /* Is it in range to be a DCC ZERO? */
-       } else if (difference > TICKS_MIN_DCC_ZERO && difference < TICKS_MAX_DCC_ZERO) {
+       } else if (difference >= TICKS_MIN_DCC_ZERO && difference <= TICKS_MAX_DCC_ZERO) {
            l_gpio_data[gpio].dcc_zero++;
 
            /* Preamble is 12 or more 1's followed by a zero, change state to STATE_DATA */
@@ -516,16 +517,19 @@ int main(int argc, char *argv[])
 
    while (1)
    {
-      gpioDelay(g_opt_r * 100000);
+      gpioDelay(g_opt_r * 1000000);
 
       for (i=0; i<g_num_gpios; i++)
       {
          g = g_gpio[i];
          g_gpio_data[g] = l_gpio_data[g];
 
+/*
+         printf("Timing Data Dump Follows\n");
          for (int x = 0;x < 512;x++) {
              printf("t=%d\t%d\n", x, timing_data[x]);
          }
+ */
          if (g_gpio_data[g].dcc_one > 0 || g_gpio_data[g].dcc_zero > 0) {
              printf("g=%d %8d %8d %8d\n", g, g_gpio_data[g].dcc_one, 
                     g_gpio_data[g].dcc_zero, g_gpio_data[g].dcc_bad);
