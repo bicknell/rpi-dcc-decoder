@@ -54,6 +54,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #define STATE_PREAMBLE 0
 #define STATE_DATA 1
 
+/* How many buckets in the timing data size array? */
+#define TIMING_DATA_SIZE 512
+
 typedef struct
 {
    uint32_t first_tick;
@@ -103,7 +106,7 @@ const char * two_eight_speeds[] = {
 };
 
 
-static int timing_data[512];
+static int timing_data[TIMING_DATA_SIZE];
 
 static volatile gpioData_t g_gpio_data[MAX_GPIOS];
 static volatile gpioData_t l_gpio_data[MAX_GPIOS];
@@ -123,12 +126,12 @@ void usage()
    fprintf
    (stderr,
       "\n" \
-      "Usage: sudo ./freq_count_1 gpio ... [OPTION] ...\n" \
+      "Usage: sudo ./dcc_decode gpio ... [OPTION] ...\n" \
       "   -r value, sets refresh period in deciseconds, %d-%d, default %d\n" \
       "   -s value, sets sampling rate in micros, %d-%d, default %d\n" \
       "\nEXAMPLE\n" \
-      "sudo ./freq_count_1 4 7 -r2 -s2\n" \
-      "Monitor gpios 4 and 7.  Refresh every 0.2 seconds.  Sample rate 2 micros.\n" \
+      "sudo ./dcc_decode 4 -r10 -s1\n" \
+      "Monitor gpio 4.  Refresh every 0.1 seconds.  Sample rate 1 micros.\n" \
       "\n",
       OPT_R_MIN, OPT_R_MAX, OPT_R_DEF,
       OPT_S_MIN, OPT_S_MAX, OPT_S_DEF
@@ -195,7 +198,12 @@ void edges(int gpio, int level, uint32_t tick)
    if (level == 0) {
        /* Calculate time from the last rise. */
        uint32_t difference = tick - l_gpio_data[gpio].last_high;
-       timing_data[difference]++;
+       if (difference < TIMING_DATA_SIZE) {
+           timing_data[difference]++;
+       } else {
+           /* Anything over the limit goes in the last bucket. */
+           timing_data[TIMING_DATA_SIZE - 1]++;
+       }
 
        if (l_gpio_data[gpio].curbit >= MAX_BITS) {
            printf("\nOverrun\n");
