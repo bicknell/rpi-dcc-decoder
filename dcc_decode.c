@@ -302,8 +302,9 @@ void edges(int gpio, int level, uint32_t tick)
                             printf("Checksum fails.\n");
                         }
                         if (l_gpio_data[gpio].bits[0] == 0x00 && l_gpio_data[gpio].bits[1] == 0x00) {
-                            printf("RESET PACKET\n");
+                            printf("DECODER RESET PACKET\n");
                         } else if (l_gpio_data[gpio].bits[0] == 0x00) {
+                            /* I believe this should really be STOP and ESTOP, need to verify. */
                             printf("BROADCAST, direction %c, speed %s\n", l_gpio_data[gpio].bits[1] & 0x20 ? 'F' : 'B',
                                    two_eight_speeds[l_gpio_data[gpio].bits[1] & 0x1F]);
                         } else if (l_gpio_data[gpio].bits[0] == 0xFF && l_gpio_data[gpio].bits[1] == 0x00) {
@@ -361,37 +362,80 @@ void edges(int gpio, int level, uint32_t tick)
 
                         /* Rest of the packet is instructions, except for the last byte which is checksum */
                         for (int i = instructions; i < ((l_gpio_data[gpio].curbit / 9) - 1); i++) {
-                            switch (l_gpio_data[gpio].bits[i] & 0xF0) {
+                            switch (l_gpio_data[gpio].bits[i] & 0xE0) {
 
                               /* 000 Decoder and Consisit Control Instruction */
                               case 0x00:
-                                switch (l_gpio_data[gpio].bits[i] & 0x0F) {
+                                switch (l_gpio_data[gpio].bits[i] & 0x10) {
                                   case 0x00:   /* Decoder Control */
-                                    printf(" Decoder Control");
+                                    switch (l_gpio_data[gpio].bits[i] & 0x0E) {
+                                      case 0x00: /* Digital Decoder Reset */
+                                        printf(" DECODER FACTORY RESET");
+                                        break;
+                                      case 0x02: /* Factory Test */
+                                        printf(" DECODER FACTORY TEST");
+                                        break;
+                                      case 0x04: /* Reserved */
+                                        printf(" Decoder Control Reserved 0x04");
+                                        break;
+                                      case 0x06: /* Set Decoder Flags */
+                                        printf(" Set decoder flags:");
+                                        switch(l_gpio_data[gpio].bits[i+1] & 0xF0) {
+                                          case 0x00: /* Disable 111 instructions */
+                                            printf(" Subaddress %d Disable 111 Instructions", l_gpio_data[gpio].bits[i+1] & 0x07);
+                                            break;
+                                          case 0x40: /* Disable Decoder Acknowledgement Request Instruction */
+                                            printf(" Subaddress %d Disable Decoder Acknowledgement Request", l_gpio_data[gpio].bits[i+1] & 0x07);
+                                            break;
+                                          case 0x50: /* Activate Bi-Directional Communications */
+                                            printf(" Subaddress %d Activate Bi-Directional Communications", l_gpio_data[gpio].bits[i+1] & 0x07);
+                                            break;
+                                          case 0x80: /* Set Bi-Directional Communications */
+                                            printf(" Subaddress %d Set Bi-Directional Communications", l_gpio_data[gpio].bits[i+1] & 0x07);
+                                            break;
+                                          case 0x90: /* Set 111 Instruction */
+                                            printf(" Subaddress %d Enable 111 Instruction", l_gpio_data[gpio].bits[i+1] & 0x07);
+                                            break;
+                                          case 0xF0: /* Accept 111 Instructions */
+                                            printf(" Subaddress %d Accept 111 Instruction", l_gpio_data[gpio].bits[i+1] & 0x07);
+                                            break;
+                                        }
+                                        i++;
+                                        break;
+                                      case 0x08: /* Reserved */
+                                        printf(" Decoder Control Reserved 0x08");
+                                        break;
+                                      case 0x0A: /* Set Advanced Addressing */
+                                        printf(" Set advanced addressing.");
+                                        break;
+                                      case 0x0C: /* Reserved */
+                                        printf(" Decoder Control Reserved 0x0C");
+                                        break;
+                                      case 0x0E: /* Decoder Acknowledgement Request */
+                                        printf(" Request decoder acknowledgement.");
+                                        break;
+                                    }
                                     break;
-                                }
-                                break;
-
-                              case 0x10:   /* Consist Control */
-                                switch (l_gpio_data[gpio].bits[i] & 0x0F) {
-                                  case 0x00:       /* Deactivate */
-                                    printf(" deactivate consist %d", l_gpio_data[gpio].bits[i + 1]);
-                                    break;
-                                  case 0x02:       /* Activate Normal Direction */
-                                    printf(" %sactivate consist normal direction %d", l_gpio_data[gpio].bits[i + 1] == 0 ? "de" : "",
-                                           l_gpio_data[gpio].bits[i + 1]);
-                                    break;
-                                  case 0x03:       /* Activate Reverse Direction */
-                                    printf(" %sactivate consist reverse direction %d", l_gpio_data[gpio].bits[i + 1] == 0 ? "de" : "",
-                                           l_gpio_data[gpio].bits[i + 1]);
-                                    break;
+                                  case 0x10:   /* Consist Control */
+                                    switch (l_gpio_data[gpio].bits[i] & 0x0F) {
+                                      case 0x00:       /* Deactivate */
+                                        printf(" deactivate consist %d", l_gpio_data[gpio].bits[i + 1]);
+                                        break;
+                                      case 0x02:       /* Activate Normal Direction */
+                                        printf(" %sactivate consist normal direction %d", l_gpio_data[gpio].bits[i + 1] == 0 ? "de" : "",
+                                               l_gpio_data[gpio].bits[i + 1]);
+                                        break;
+                                      case 0x03:       /* Activate Reverse Direction */
+                                        printf(" %sactivate consist reverse direction %d", l_gpio_data[gpio].bits[i + 1] == 0 ? "de" : "",
+                                               l_gpio_data[gpio].bits[i + 1]);
+                                        break;
+                                    }
                                 }
                                 i++;
                                 break;
 
                               /* 001 Advanced Operations Instructions */
                               case 0x20:
-                              case 0x30:
                                 switch (l_gpio_data[gpio].bits[i] & 0x1F) {
                                   case 0x1F:   /* 128 Speed Step Control */
                                     if ((l_gpio_data[gpio].bits[i + 1] & 0x7F) == 0) {
@@ -420,19 +464,16 @@ void edges(int gpio, int level, uint32_t tick)
 
                               /* 010 Speed and Direction Instruction for Reverse Operation */
                               case 0x40:
-                              case 0x50:
                                 printf(" direction R, speed (28ss) %s", two_eight_speeds[l_gpio_data[gpio].bits[i] & 0x1F]);
                                 break;
 
                               /* 011 Speed and Direction Instruction for Forward Operation */
                               case 0x60:
-                              case 0x70:
                                 printf(" direction F, speed (28ss) %s", two_eight_speeds[l_gpio_data[gpio].bits[i] & 0x1F]);
                                 break;
 
                               /* 100 Function Group One Instruction */
                               case 0x80:
-                              case 0x90:
                                 printf(" F0=%c, F1=%c, F2=%c, F3=%c, F4=%c",
                                        (l_gpio_data[gpio].bits[i] & 0x10) == 0x10 ? '1' : '0',
                                        (l_gpio_data[gpio].bits[i] & 0x01) == 0x01 ? '1' : '0',
@@ -443,7 +484,6 @@ void edges(int gpio, int level, uint32_t tick)
 
                                /* 101 Function Group Two Instruction */
                               case 0xA0:
-                              case 0xB0:
                                 printf(" F5=%c, F6=%c, F7=%c, F8=%c, F9=%c, F10=%c, F11=%c, F12=%c",
                                        (l_gpio_data[gpio].bits[i] & 0x11) == 0x11 ? '1' : '0',
                                        (l_gpio_data[gpio].bits[i] & 0x12) == 0x12 ? '1' : '0',
@@ -462,7 +502,47 @@ void edges(int gpio, int level, uint32_t tick)
 
                               /* 111 Configuration Variable Access Instruction */
                               case 0xE0:
-                                printf(" Config Variable");
+                                switch (l_gpio_data[gpio].bits[i] & 0x10) {
+                                  case 0x00: /* All */
+                                    switch (l_gpio_data[gpio].bits[i] & 0xC0) {
+                                      case 0x00: /* Reserved */
+                                      case 0x40: /* Verify Byte */
+                                        printf(" Verify CV %d=%d", ((l_gpio_data[gpio].bits[i] & 0x3) << 8) + l_gpio_data[gpio].bits[i+1], l_gpio_data[gpio].bits[i+2]);
+                                        break;
+                                      case 0x80: /* Write Byte */
+                                        printf(" Write CV %d=%d", ((l_gpio_data[gpio].bits[i] & 0x3) << 8) + l_gpio_data[gpio].bits[i+1], l_gpio_data[gpio].bits[i+2]);
+                                        break;
+                                      case 0xC0: /* Bit Manipulation */
+                                        switch (l_gpio_data[gpio].bits[i+2] & 0x10) {
+                                          case 0x00: /* Verify Bit */
+                                            printf(" Verify CV %d bit %d value %d", ((l_gpio_data[gpio].bits[i] & 0x3) << 8) + l_gpio_data[gpio].bits[i+1], l_gpio_data[gpio].bits[i+2] & 0x7, l_gpio_data[gpio].bits[i+2] & 0x8 >> 3);
+                                            break;
+                                          case 0x10: /* Write Bit */
+                                            printf(" Verify CV %d bit %d value %d", ((l_gpio_data[gpio].bits[i] & 0x3) << 8) + l_gpio_data[gpio].bits[i+1], l_gpio_data[gpio].bits[i+2] & 0x7, l_gpio_data[gpio].bits[i+2] & 0x8 >> 3);
+                                            break;
+                                        }
+                                        break;
+                                    }
+                                    i++; i++;
+                                    break;
+                                  case 0x10: /* Limited */
+                                    switch (l_gpio_data[gpio].bits[i] & 0xF) {
+                                      case 0x00: /* Not available */
+                                        printf(" Configuration Variable Short Form Instruction Not Available");
+                                        break;
+                                      case 0x02: /* CV#23 Acceleration Value */
+                                        printf(" Set CV23=%d", l_gpio_data[gpio].bits[i+1]);
+                                        break;
+                                      case 0x03: /* CV#24 Acceleration Value */
+                                        printf(" Set CV24=%d", l_gpio_data[gpio].bits[i+1]);
+                                        break;
+                                      case 0x09: /* S-9.2.3 Appendix B */
+                                        printf(" Configuration Variable S-9.2.3 Appendix B");
+                                        break;
+                                    }
+                                    i++;
+                                    break;
+                                }
                                 break;
 
                               default:
