@@ -33,44 +33,49 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <pigpio.h>
 
+/* Used for some internal array sizing. */
 #define MAX_GPIOS 32
-#define MAX_BITS 64
+#define MAX_BITS  64
 
 /* Timing values found via trial and error */
 /* Remember, zeros s t r e t c h */
-#define TICKS_MIN_DCC_ONE 12
-#define TICKS_MAX_DCC_ONE 38
-#define TICKS_MIN_DCC_ZERO 68
+#define TICKS_MIN_DCC_ONE   12
+#define TICKS_MAX_DCC_ONE   38
+#define TICKS_MIN_DCC_ZERO  68
 #define TICKS_MAX_DCC_ZERO 150
 
+/* Refresh time aka how often to print summary status, as set by option r */
 #define OPT_R_MIN 1
 #define OPT_R_MAX 300
 #define OPT_R_DEF 10
 
+/* Sample  time, as set by option s, more frequent sampling takes more CPU.  The RPi 3 is easily
+ * good for 1 though, so we make that the default. 
+ */
 #define OPT_S_MIN 1
 #define OPT_S_MAX 10
-#define OPT_S_DEF 5
+#define OPT_S_DEF 1
 
+/* Our Finite State Machine has two states. */
 #define STATE_PREAMBLE 0
-#define STATE_DATA 1
+#define STATE_DATA     1
 
-/* How many buckets in the timing data size array? */
+/* How many buckets in the timing data size array? This is used for debugging only. */
 #define TIMING_DATA_SIZE 512
 
-typedef struct
-{
-   uint32_t first_tick;
-   uint32_t last_high;
-   uint32_t curbit;
-   uint32_t state;
-   uint32_t preamble;
-   uint32_t dcc_one;
-   uint32_t dcc_zero;
-   uint32_t dcc_bad;
-   uint8_t bits[MAX_BITS];
+typedef struct {
+    uint32_t first_tick;
+    uint32_t last_high;
+    uint32_t curbit;
+    uint32_t state;
+    uint32_t preamble;
+    uint32_t dcc_one;
+    uint32_t dcc_zero;
+    uint32_t dcc_bad;
+    uint8_t bits[MAX_BITS];
 } gpioData_t;
 
-const char * two_eight_speeds[] = {
+const char *two_eight_speeds[] = {
     "STOP",
     "E-STOP",
     "Step 1",
@@ -123,431 +128,557 @@ static int g_opt_s = OPT_S_DEF;
 
 void usage()
 {
-   fprintf
-   (stderr,
-      "\n" \
-      "Usage: sudo ./dcc_decode gpio ... [OPTION] ...\n" \
-      "   -r value, sets refresh period in deciseconds, %d-%d, default %d\n" \
-      "   -s value, sets sampling rate in micros, %d-%d, default %d\n" \
-      "\nEXAMPLE\n" \
-      "sudo ./dcc_decode 4 -r10 -s1\n" \
-      "Monitor gpio 4.  Refresh every 0.1 seconds.  Sample rate 1 micros.\n" \
-      "\n",
-      OPT_R_MIN, OPT_R_MAX, OPT_R_DEF,
-      OPT_S_MIN, OPT_S_MAX, OPT_S_DEF
-   );
+    fprintf(stderr,
+            "\n" \
+            "Usage: sudo ./dcc_decode gpio ... [OPTION] ...\n" \
+            "   -r value, sets refresh period in deciseconds, %d-%d, default %d\n" \
+            "   -s value, sets sampling rate in micros, %d-%d, default %d\n" \
+            "\nEXAMPLE\n" \
+            "sudo ./dcc_decode 4 -r10 -s1\n" \
+            "Monitor gpio 4.  Refresh every 0.1 seconds.  Sample rate 1 micros.\n" \
+            "\n",
+            OPT_R_MIN, OPT_R_MAX, OPT_R_DEF,
+            OPT_S_MIN, OPT_S_MAX, OPT_S_DEF);
 }
 
-void fatal(int show_usage, char *fmt, ...)
+void fatal(int show_usage, char *fmt,...)
 {
-   char buf[128];
-   va_list ap;
+    char buf[128];
+    va_list ap;
 
-   va_start(ap, fmt);
-   vsnprintf(buf, sizeof(buf), fmt, ap);
-   va_end(ap);
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
 
-   fprintf(stderr, "%s\n", buf);
+    fprintf(stderr, "%s\n", buf);
 
-   if (show_usage) usage();
+    if (show_usage)
+        usage();
 
-   fflush(stderr);
+    fflush(stderr);
 
-   exit(EXIT_FAILURE);
+    exit(EXIT_FAILURE);
 }
 
+/* Parse command line options and set defaults. */
 static int initOpts(int argc, char *argv[])
 {
-   int i, opt;
+    int i, opt;
 
-   while ((opt = getopt(argc, argv, "p:r:s:")) != -1)
-   {
-      i = -1;
+    while ((opt = getopt(argc, argv, "p:r:s:")) != -1) {
+        i = -1;
 
-      switch (opt)
-      {
-         case 'r':
+        switch (opt) {
+          case 'r':
             i = atoi(optarg);
             if ((i >= OPT_R_MIN) && (i <= OPT_R_MAX))
-               g_opt_r = i;
-            else fatal(1, "invalid -r option (%d)", i);
+                g_opt_r = i;
+            else
+                fatal(1, "invalid -r option (%d)", i);
             break;
 
-         case 's':
+          case 's':
             i = atoi(optarg);
             if ((i >= OPT_S_MIN) && (i <= OPT_S_MAX))
-               g_opt_s = i;
-            else fatal(1, "invalid -s option (%d)", i);
+                g_opt_s = i;
+            else
+                fatal(1, "invalid -s option (%d)", i);
             break;
 
-        default: /* '?' */
-           usage();
-           exit(-1);
+          default:             /* '?' */
+            usage();
+            exit(-1);
         }
     }
-   return optind;
+    return optind;
 }
 
+
+/* Interrupt function called on each GPIO level change. */
 void edges(int gpio, int level, uint32_t tick)
 {
-   if (level == 1) {
-       l_gpio_data[gpio].last_high = tick;
-       return;
-   }
+    /* If the level just went high, record the timer value and return. */
+    if (level == 1) {
+        l_gpio_data[gpio].last_high = tick;
+        return;
+    }
+    
+    /* If the level just went low, calculate the time of the last pulse. */
+    if (level == 0) {
+        /* Calculate time from the last rise, record in our statistics. */
+        uint32_t difference = tick - l_gpio_data[gpio].last_high;
 
-   if (level == 0) {
-       /* Calculate time from the last rise. */
-       uint32_t difference = tick - l_gpio_data[gpio].last_high;
-       if (difference < TIMING_DATA_SIZE) {
-           timing_data[difference]++;
-       } else {
-           /* Anything over the limit goes in the last bucket. */
-           timing_data[TIMING_DATA_SIZE - 1]++;
-       }
+        if (difference < TIMING_DATA_SIZE) {
+            timing_data[difference]++;
+        } else {
+            /* Anything over the limit goes in the last bucket. */
+            timing_data[TIMING_DATA_SIZE - 1]++;
+        }
 
-       if (l_gpio_data[gpio].curbit >= MAX_BITS) {
-           printf("\nOverrun\n");
-           /* Reset everything */
-           l_gpio_data[gpio].state = STATE_PREAMBLE;
-           l_gpio_data[gpio].preamble = 0;
-           l_gpio_data[gpio].curbit = 0;
-           for (uint32_t x = 0;x < MAX_BITS;x++) {
-               l_gpio_data[gpio].bits[x] = 0;
-           }
-           return;
-       }   
+        /* Have we gotten too many bits without seeing EOM?  If so, we're reading garbage and it's
+         * time to reset. 
+         */
+        if (l_gpio_data[gpio].curbit >= MAX_BITS) {
+            printf("\nOverrun\n");
+            /* Reset everything */
+            l_gpio_data[gpio].state = STATE_PREAMBLE;
+            l_gpio_data[gpio].preamble = 0;
+            l_gpio_data[gpio].curbit = 0;
+            for (uint32_t x = 0; x < MAX_BITS; x++) {
+                l_gpio_data[gpio].bits[x] = 0;
+            }
+            return;
+        }
+        
+        /* Is it in range to be a DCC ZERO? */
+        if (difference >= TICKS_MIN_DCC_ZERO && difference <= TICKS_MAX_DCC_ZERO) {
+            l_gpio_data[gpio].dcc_zero++;
 
-       /* Is it in range to be a DCC ONE? */
-       if (difference >= TICKS_MIN_DCC_ONE && difference <= TICKS_MAX_DCC_ONE) {
-           l_gpio_data[gpio].dcc_one++;
+            /* Where are we in the FSM? */
+            switch (l_gpio_data[gpio].state) {
+              /* If we're in the preamble, see if it is still valid. */
+              case STATE_PREAMBLE:
+                /* More than 12 bits?  Move to data state and record. */
+                if (l_gpio_data[gpio].preamble >= 12) {
+                    l_gpio_data[gpio].state = STATE_DATA;
+                    l_gpio_data[gpio].curbit++;
 
-           /* If we're in the PREAMBLE state, count ones */
-           if (l_gpio_data[gpio].state == STATE_PREAMBLE) {
-               l_gpio_data[gpio].preamble++;
+                /* Not enough preamble, but we got a zero?  That's an error, start over */
+                } else if (l_gpio_data[gpio].state == STATE_PREAMBLE) {
+                    /* Reset everything */
+                    l_gpio_data[gpio].state = STATE_PREAMBLE;
+                    l_gpio_data[gpio].preamble = 0;
+                    l_gpio_data[gpio].curbit = 0;
+                    for (int x = 0; x < MAX_BITS; x++) {
+                        l_gpio_data[gpio].bits[x] = 0;
+                    }
+                }
+                break;
 
-           /* If we're in the data state, and we've received bits, and the current bit is a 9th bit, and it's a 1, EOM */
-           } else if (l_gpio_data[gpio].state == STATE_DATA && (l_gpio_data[gpio].curbit > 0) && ((l_gpio_data[gpio].curbit % 9) == 0)) {
+              /* If we're in the data state, record the zero. */
+              case STATE_DATA:
+                    l_gpio_data[gpio].curbit++;
+                break;
 
-               /* Now decode packet */
-               switch (l_gpio_data[gpio].curbit / 9) {
+              default:
+                /* Our FSM is in a state that should never happen, reset. */
+                printf("THIS SHOULD NEVER HAPPEN 1\n");
+                /* Reset everything */
+                l_gpio_data[gpio].state = STATE_PREAMBLE;
+                l_gpio_data[gpio].preamble = 0;
+                l_gpio_data[gpio].curbit = 0;
+                for (int x = 0; x < MAX_BITS; x++) {
+                    l_gpio_data[gpio].bits[x] = 0;
+                }
+            }
 
-               case 3:
-                   if ((l_gpio_data[gpio].bits[0] ^ l_gpio_data[gpio].bits[1]) != l_gpio_data[gpio].bits[2]) {
-                       printf("Checksum fails.\n");
-                   }
-                   if (l_gpio_data[gpio].bits[0] == 0x00 && l_gpio_data[gpio].bits[1] == 0x00) {
-                       printf("RESET PACKET\n");
-                   } else if (l_gpio_data[gpio].bits[0] == 0x00) {
-                       printf("BROADCAST, direction %c, speed %s\n", l_gpio_data[gpio].bits[1] & 0x20 ? 'F' : 'B',
-                              two_eight_speeds[l_gpio_data[gpio].bits[1] & 0x1F]);
-                   } else if (l_gpio_data[gpio].bits[0] == 0xFF && l_gpio_data[gpio].bits[1] == 0x00) {
-                       printf("IDLE PACKET\n");
-                   } else {
-                       printf("Baseline   : 7-bit Address %4d, direction %c, speed (28ss) %s\n", l_gpio_data[gpio].bits[0], 
-                               l_gpio_data[gpio].bits[1] & 0x20 ? 'F' : 'B',
-                              two_eight_speeds[l_gpio_data[gpio].bits[1] & 0x1F]);
-                   }
-                   break;
-
-               case 4:
-                   if ((l_gpio_data[gpio].bits[0] ^ l_gpio_data[gpio].bits[1] ^ l_gpio_data[gpio].bits[2]) != l_gpio_data[gpio].bits[3]) {
-                       printf("4-byte Checksum fails.\n");
-                       break;
-                   }
-
-               case 5:
-                   if ((l_gpio_data[gpio].bits[0] ^ l_gpio_data[gpio].bits[1] ^ l_gpio_data[gpio].bits[2] ^ l_gpio_data[gpio].bits[3]) != l_gpio_data[gpio].bits[4]) {
-                       printf("5-byte Checksum fails.\n");
-                       break;
-                   }
-
-               case 6:
-                   if ((l_gpio_data[gpio].bits[0] ^ l_gpio_data[gpio].bits[1] ^ l_gpio_data[gpio].bits[2] ^ l_gpio_data[gpio].bits[3] ^ l_gpio_data[gpio].bits[4]) != l_gpio_data[gpio].bits[5]) {
-                       printf("6-byte Checksum fails.\n");
-                       break;
-                   }
+        /* Is it in range to be a DCC ONE? */
+        } else if (difference >= TICKS_MIN_DCC_ONE && difference <= TICKS_MAX_DCC_ONE) {
+            l_gpio_data[gpio].dcc_one++;
 
 
-                   uint16_t address;
-                   uint16_t address_bits;
-                   uint16_t instructions;
+            /* Where are we in the FSM? */
+            switch (l_gpio_data[gpio].state) {
+              /* If we're in the PREAMBLE state, count ones */
+              case STATE_PREAMBLE:
+                l_gpio_data[gpio].preamble++;
+                break;
 
-                   /* Decode the address */
-                   if ((l_gpio_data[gpio].bits[0] & 0xC0) == 0xC0) {
-                     address = l_gpio_data[gpio].bits[1] | ((l_gpio_data[gpio].bits[0] & 0x3F) << 8);
-                     address_bits = 14;
-                     instructions = 2;
-                   } else if ((l_gpio_data[gpio].bits[0] & 0xC0) == 0x80) {
-                     address = l_gpio_data[gpio].bits[1] | ((l_gpio_data[gpio].bits[0] & 0x3F) << 8);
-                     address_bits = 9;
-                     instructions = 2;
-                   } else if ((l_gpio_data[gpio].bits[0] & 0xC0) == 0x00) {
-                     address = l_gpio_data[gpio].bits[0];
-                     address_bits = 7;
-                     instructions = 1;
-                   }
-                   printf("Extended(%d): %d-bit Address %4d:", l_gpio_data[gpio].curbit / 9, address_bits, address);
+              /* If we're in the DATA state, record the data. */
+              case STATE_DATA:
+                /* Not the 9th bit? */
+                if (l_gpio_data[gpio].curbit % 9) {
+                    /* Store */
+                    l_gpio_data[gpio].bits[l_gpio_data[gpio].curbit / 9] |= 0x1 << (8 - (l_gpio_data[gpio].curbit % 9));
+                    l_gpio_data[gpio].curbit++;
+                } else {
+                    l_gpio_data[gpio].curbit++;
+                    /* The current bit is a 9th bit, and it's a 1, end of the DCC message.  Decode it! */
+                    switch (l_gpio_data[gpio].curbit / 9) {
 
-      
-                   /* Rest of the packet is instructions, except for the last byte which is checksum */
-                   for (int i = instructions;i < ((l_gpio_data[gpio].curbit / 9) - 1);i++) {
-                       switch (l_gpio_data[gpio].bits[i] & 0xE0) { 
-                       case 0x00: /* 000 Decoder and Consisit Control Instruction */
-                           switch (l_gpio_data[gpio].bits[i] & 0x10) {
-                           case 0x00: /* Decoder Control */
-                               printf(" Decoder Control");
-                               break;
-                           case 0x10: /* Consist Control */   
-                               switch (l_gpio_data[gpio].bits[i] & 0x0F) {
-                               case 0x00: /* Deactivate */
-                                   printf(" deactivate consist %d", l_gpio_data[gpio].bits[i+1]);
-                                   break;
-                               case 0x02: /* Activate Normal Direction */
-                                   printf(" %sactivate consist normal direction %d", l_gpio_data[gpio].bits[i+1] == 0 ? "de" : "",
-                                          l_gpio_data[gpio].bits[i+1]);
-                                   break;
-                               case 0x03: /* Activate Reverse Direction */
-                                   printf(" %sactivate consist reverse direction %d", l_gpio_data[gpio].bits[i+1] == 0 ? "de" : "",
-                                          l_gpio_data[gpio].bits[i+1]);
-                                   break;
-                               }
-                               i++;
-                               break;
-                           }
-                           break;
-                       case 0x20: /* 001 Advanced Operations Instructions */
-                           switch (l_gpio_data[gpio].bits[i] & 0x1F) {
-                           case 0x1F: /* 128 Speed Step Control */
-                               if ((l_gpio_data[gpio].bits[i+1] & 0x7F) == 0) {
-                                   printf(" direction %c, speed (128ss) STOP", l_gpio_data[gpio].bits[i+1] & 0x80 ? 'F' : 'R');
-                               } else if ((l_gpio_data[gpio].bits[i+1] & 0x7F) == 1) {
-                                   printf(" direction %c, speed (128ss) E-STOP", l_gpio_data[gpio].bits[i+1] & 0x80 ? 'F' : 'R');
-                               } else {
-                                   printf(" direction %c, speed (128ss) %d", 
-                                          l_gpio_data[gpio].bits[i+1] & 0x80 ? 'F' : 'R', l_gpio_data[gpio].bits[i+1] & 0x7F);
-                               }
-                               i++;
-                               break; 
-                           case 0x1E: /* Restricted Speed Step Control */
-                               printf(" restricted speed step");
-                               i++;
-                               break; 
-                           case 0x1D: /* Analog Function Group */
-                               printf(" analog function group");
-                               i++;
-                               break; 
-                           default:
-                               printf(" THIS SHOULD NEVER HAPPEN\n");
-                           }
-                           break;
-                       case 0x40: /* 010 Speed and Direction Instruction for Reverse Operation */
-                           printf(" direction R, speed (28ss) %s", two_eight_speeds[l_gpio_data[gpio].bits[i] & 0x1F]);
-                           break;
-                       case 0x60: /* 011 Speed and Direction Instruction for Forward Operation */
-                           printf(" direction F, speed (28ss) %s", two_eight_speeds[l_gpio_data[gpio].bits[i] & 0x1F]);
-                           break;
-                       case 0x80: /* 100 Function Group One Instruction */
-                           printf(" F0=%c, F1=%c, F2=%c, F3=%c, F4=%c",
-                                  (l_gpio_data[gpio].bits[i] & 0x08) == 0x08 ? '1' : '0',
-                                  (l_gpio_data[gpio].bits[i] & 0x01) == 0x01 ? '1' : '0',
-                                  (l_gpio_data[gpio].bits[i] & 0x02) == 0x02 ? '1' : '0',
-                                  (l_gpio_data[gpio].bits[i] & 0x03) == 0x03 ? '1' : '0',
-                                  (l_gpio_data[gpio].bits[i] & 0x04) == 0x04 ? '1' : '0');
-                           break;
-                       case 0xA0: /* 101 Function Group Two Instruction */
-                           printf(" F5=%c, F6=%c, F7=%c, F8=%c, F9=%c, F10=%c, F11=%c, F12=%c",
-                                  (l_gpio_data[gpio].bits[i] & 0x11) == 0x11 ? '1' : '0',
-                                  (l_gpio_data[gpio].bits[i] & 0x12) == 0x12 ? '1' : '0',
-                                  (l_gpio_data[gpio].bits[i] & 0x14) == 0x14 ? '1' : '0',
-                                  (l_gpio_data[gpio].bits[i] & 0x18) == 0x18 ? '1' : '0',
-                                  (l_gpio_data[gpio].bits[i] & 0x01) == 0x01 ? '1' : '0',
-                                  (l_gpio_data[gpio].bits[i] & 0x02) == 0x02 ? '1' : '0',
-                                  (l_gpio_data[gpio].bits[i] & 0x04) == 0x04 ? '1' : '0',
-                                  (l_gpio_data[gpio].bits[i] & 0x08) == 0x08 ? '1' : '0');
-                           break;
-                       case 0xC0: /* 110 Future Expansion */
-                           printf(" Future Expansion");
-                           break;
-                       case 0xE0: /* 111 Configuration Variable Access Instruction */
-                           printf(" Config Variable");
-                           break;
-                       default:
-                           printf(" THIS SHOULD NEVER HAPPEN\n");
-                       }
-                   }
-                   printf("\n");
-                   break;
+                      /* Two byte message + checksum. */
+                      case 3:
+                        if ((l_gpio_data[gpio].bits[0] ^ l_gpio_data[gpio].bits[1]) != l_gpio_data[gpio].bits[2]) {
+                            printf("Checksum fails.\n");
+                        }
+                        if (l_gpio_data[gpio].bits[0] == 0x00 && l_gpio_data[gpio].bits[1] == 0x00) {
+                            printf("DECODER RESET PACKET\n");
+                        } else if (l_gpio_data[gpio].bits[0] == 0x00) {
+                            /* I believe this should really be STOP and ESTOP, need to verify. */
+                            printf("BROADCAST, direction %c, speed %s\n", l_gpio_data[gpio].bits[1] & 0x20 ? 'F' : 'B',
+                                   two_eight_speeds[l_gpio_data[gpio].bits[1] & 0x1F]);
+                        } else if (l_gpio_data[gpio].bits[0] == 0xFF && l_gpio_data[gpio].bits[1] == 0x00) {
+                            printf("IDLE PACKET\n");
+                        } else {
+                            printf("Baseline   : 7-bit Address %4d, direction %c, speed (28ss) %s\n", l_gpio_data[gpio].bits[0],
+                                   l_gpio_data[gpio].bits[1] & 0x20 ? 'F' : 'B',
+                                   two_eight_speeds[l_gpio_data[gpio].bits[1] & 0x1F]);
+                        }
+                        break;
 
-               default:
-                   /* Print packet in hex */
-                   printf("%d bytes:", l_gpio_data[gpio].curbit / 9);
-                   /* 9th byte 1 means end packet */
-                   for (uint32_t x = 0;x < l_gpio_data[gpio].curbit / 9;x++) {
-                       printf(" %02X", l_gpio_data[gpio].bits[x]);
-                   }
-                   putchar('\n');
+                      /* Three byte message + checksum. */
+                      case 4:
+                        if ((l_gpio_data[gpio].bits[0] ^ l_gpio_data[gpio].bits[1] ^ l_gpio_data[gpio].bits[2]) != l_gpio_data[gpio].bits[3]) {
+                            printf("4-byte Checksum fails.\n");
+                            break;
+                        }
 
-               }
+                      /* Four byte message + checksum. */
+                      case 5:
+                        if ((l_gpio_data[gpio].bits[0] ^ l_gpio_data[gpio].bits[1] ^ l_gpio_data[gpio].bits[2] ^ l_gpio_data[gpio].bits[3]) != l_gpio_data[gpio].bits[4]) {
+                            printf("5-byte Checksum fails.\n");
+                            break;
+                        }
 
-               /* Reset everything */
-               l_gpio_data[gpio].state = STATE_PREAMBLE;
-               l_gpio_data[gpio].preamble = 0;
-               l_gpio_data[gpio].curbit = 0;
-               for (uint32_t x = 0;x < MAX_BITS;x++) {
-                   l_gpio_data[gpio].bits[x] = 0;
-               }
+                      /* Five byte message + checksum. */
+                      case 6:
+                        if ((l_gpio_data[gpio].bits[0] ^ l_gpio_data[gpio].bits[1] ^ l_gpio_data[gpio].bits[2] ^ l_gpio_data[gpio].bits[3] ^ l_gpio_data[gpio].bits[4]) != l_gpio_data[gpio].bits[5]) {
+                            printf("6-byte Checksum fails.\n");
+                            break;
+                        }
 
-           /* If we're in the data state, record the data. */
-           } else if (l_gpio_data[gpio].state == STATE_DATA) {
-               int byte = l_gpio_data[gpio].curbit / 9;
-               int shift = 8 - (l_gpio_data[gpio].curbit % 9);
 
-               if (l_gpio_data[gpio].curbit % 9) {
-/*                   printf("%d, Setting byte %d, shift %d = 1\n", l_gpio_data[gpio].curbit, byte, shift); */
-                   l_gpio_data[gpio].bits[byte] |= 0x1 << shift;
-               } else {
-                   printf("RECEIVED ONE IN ILLEGAL SPACE\n");
-               }
-               l_gpio_data[gpio].curbit++;
-           } else {
-               printf("THIS SHOULD NEVER HAPPEN\n");
+                        
+                        uint16_t address;
+                        uint16_t address_bits;
+                        uint16_t instructions;
 
-               /* Reset everything */
-               l_gpio_data[gpio].state = STATE_PREAMBLE;
-               l_gpio_data[gpio].preamble = 0;
-               l_gpio_data[gpio].curbit = 0;
-               for (uint32_t x = 0;x < MAX_BITS;x++) {
-                   l_gpio_data[gpio].bits[x] = 0;
-               }
-           }
+                        /* Decode the address */
+                        if ((l_gpio_data[gpio].bits[0] & 0xC0) == 0xC0) {
+                            address = l_gpio_data[gpio].bits[1] | ((l_gpio_data[gpio].bits[0] & 0x3F) << 8);
+                            address_bits = 14;
+                            instructions = 2;
+                        } else if ((l_gpio_data[gpio].bits[0] & 0xC0) == 0x80) {
+                            address = l_gpio_data[gpio].bits[1] | ((l_gpio_data[gpio].bits[0] & 0x3F) << 8);
+                            address_bits = 9;
+                            instructions = 2;
+                        } else if ((l_gpio_data[gpio].bits[0] & 0xC0) == 0x00) {
+                            address = l_gpio_data[gpio].bits[0];
+                            address_bits = 7;
+                            instructions = 1;
+                        }
+                        printf("Extended(%d): %d-bit Address %4d:", l_gpio_data[gpio].curbit / 9, address_bits, address);
 
-       /* Is it in range to be a DCC ZERO? */
-       } else if (difference >= TICKS_MIN_DCC_ZERO && difference <= TICKS_MAX_DCC_ZERO) {
-           l_gpio_data[gpio].dcc_zero++;
 
-           /* Preamble is 12 or more 1's followed by a zero, change state to STATE_DATA */
-           if (l_gpio_data[gpio].state == STATE_PREAMBLE && l_gpio_data[gpio].preamble >= 12) {
-               l_gpio_data[gpio].state = STATE_DATA;
-/*               printf("Packet start bit after %d preamble. (%d)\n", l_gpio_data[gpio].preamble, l_gpio_data[gpio].curbit); */
-               l_gpio_data[gpio].curbit++;
+                        /* Rest of the packet is instructions, except for the last byte which is checksum */
+                        for (int i = instructions; i < ((l_gpio_data[gpio].curbit / 9) - 1); i++) {
+                            switch (l_gpio_data[gpio].bits[i] & 0xE0) {
 
-           /* Not enough preamble, but we got a zero?  That's an error, start over */
-           } else if (l_gpio_data[gpio].state == STATE_PREAMBLE) {
-/*               printf("\nZero after %d premable\n", l_gpio_data[gpio].preamble);  */
-               /* Reset everything */
-               l_gpio_data[gpio].state = STATE_PREAMBLE;
-               l_gpio_data[gpio].preamble = 0;
-               l_gpio_data[gpio].curbit = 0;
-               for (int x = 0;x < MAX_BITS;x++) {
-                   l_gpio_data[gpio].bits[x] = 0;
-               }
+                              /* 000 Decoder and Consisit Control Instruction */
+                              case 0x00:
+                                switch (l_gpio_data[gpio].bits[i] & 0x10) {
+                                  case 0x00:   /* Decoder Control */
+                                    switch (l_gpio_data[gpio].bits[i] & 0x0E) {
+                                      case 0x00: /* Digital Decoder Reset */
+                                        printf(" DECODER FACTORY RESET");
+                                        break;
+                                      case 0x02: /* Factory Test */
+                                        printf(" DECODER FACTORY TEST");
+                                        break;
+                                      case 0x04: /* Reserved */
+                                        printf(" Decoder Control Reserved 0x04");
+                                        break;
+                                      case 0x06: /* Set Decoder Flags */
+                                        printf(" Set decoder flags:");
+                                        switch(l_gpio_data[gpio].bits[i+1] & 0xF0) {
+                                          case 0x00: /* Disable 111 instructions */
+                                            printf(" Subaddress %d Disable 111 Instructions", l_gpio_data[gpio].bits[i+1] & 0x07);
+                                            break;
+                                          case 0x40: /* Disable Decoder Acknowledgement Request Instruction */
+                                            printf(" Subaddress %d Disable Decoder Acknowledgement Request", l_gpio_data[gpio].bits[i+1] & 0x07);
+                                            break;
+                                          case 0x50: /* Activate Bi-Directional Communications */
+                                            printf(" Subaddress %d Activate Bi-Directional Communications", l_gpio_data[gpio].bits[i+1] & 0x07);
+                                            break;
+                                          case 0x80: /* Set Bi-Directional Communications */
+                                            printf(" Subaddress %d Set Bi-Directional Communications", l_gpio_data[gpio].bits[i+1] & 0x07);
+                                            break;
+                                          case 0x90: /* Set 111 Instruction */
+                                            printf(" Subaddress %d Enable 111 Instruction", l_gpio_data[gpio].bits[i+1] & 0x07);
+                                            break;
+                                          case 0xF0: /* Accept 111 Instructions */
+                                            printf(" Subaddress %d Accept 111 Instruction", l_gpio_data[gpio].bits[i+1] & 0x07);
+                                            break;
+                                        }
+                                        i++;
+                                        break;
+                                      case 0x08: /* Reserved */
+                                        printf(" Decoder Control Reserved 0x08");
+                                        break;
+                                      case 0x0A: /* Set Advanced Addressing */
+                                        printf(" Set advanced addressing.");
+                                        break;
+                                      case 0x0C: /* Reserved */
+                                        printf(" Decoder Control Reserved 0x0C");
+                                        break;
+                                      case 0x0E: /* Decoder Acknowledgement Request */
+                                        printf(" Request decoder acknowledgement.");
+                                        break;
+                                    }
+                                    break;
+                                  case 0x10:   /* Consist Control */
+                                    switch (l_gpio_data[gpio].bits[i] & 0x0F) {
+                                      case 0x00:       /* Deactivate */
+                                        printf(" deactivate consist %d", l_gpio_data[gpio].bits[i + 1]);
+                                        break;
+                                      case 0x02:       /* Activate Normal Direction */
+                                        printf(" %sactivate consist normal direction %d", l_gpio_data[gpio].bits[i + 1] == 0 ? "de" : "",
+                                               l_gpio_data[gpio].bits[i + 1]);
+                                        break;
+                                      case 0x03:       /* Activate Reverse Direction */
+                                        printf(" %sactivate consist reverse direction %d", l_gpio_data[gpio].bits[i + 1] == 0 ? "de" : "",
+                                               l_gpio_data[gpio].bits[i + 1]);
+                                        break;
+                                    }
+                                }
+                                i++;
+                                break;
 
-           /* If we're in the data state, record the zero. */
-           } else if (l_gpio_data[gpio].state == STATE_DATA) {
-/*               int byte = l_gpio_data[gpio].curbit / 9;
-               int shift = 8 - (l_gpio_data[gpio].curbit % 9); */
+                              /* 001 Advanced Operations Instructions */
+                              case 0x20:
+                                switch (l_gpio_data[gpio].bits[i] & 0x1F) {
+                                  case 0x1F:   /* 128 Speed Step Control */
+                                    if ((l_gpio_data[gpio].bits[i + 1] & 0x7F) == 0) {
+                                        printf(" direction %c, speed (128ss) STOP", l_gpio_data[gpio].bits[i + 1] & 0x80 ? 'F' : 'R');
+                                    } else if ((l_gpio_data[gpio].bits[i + 1] & 0x7F) == 1) {
+                                        printf(" direction %c, speed (128ss) E-STOP", l_gpio_data[gpio].bits[i + 1] & 0x80 ? 'F' : 'R');
+                                    } else {
+                                        printf(" direction %c, speed (128ss) %d",
+                                               l_gpio_data[gpio].bits[i + 1] & 0x80 ? 'F' : 'R', l_gpio_data[gpio].bits[i + 1] & 0x7F);
+                                    }
+                                    i++;
+                                    break;
+                                  case 0x1E:   /* Restricted Speed Step Control */
+                                    printf(" restricted speed step");
+                                    i++;
+                                    break;
+                                  case 0x1D:   /* Analog Function Group */
+                                    printf(" analog function group");
+                                    i++;
+                                    break;
+                                  default:
+                                    printf("Instruction reserved for future use [%x]\n", l_gpio_data[gpio].bits[i] & 0x1F);
+                                }
+                                i++;
+                                break;
 
-               if (l_gpio_data[gpio].curbit % 9 == 0) { 
-/*                   printf("Received data byte start bit.\n"); */
-               } else {
-/*                   printf("%d, Setting byte %d, shift %d = 0\n", l_gpio_data[gpio].curbit, byte, shift); */
-               }
-               l_gpio_data[gpio].curbit++;
+                              /* 010 Speed and Direction Instruction for Reverse Operation */
+                              case 0x40:
+                                printf(" direction R, speed (28ss) %s", two_eight_speeds[l_gpio_data[gpio].bits[i] & 0x1F]);
+                                break;
 
-           } else {
-               printf("THIS SHOULD NEVER HAPPEN\n");
-               /* Reset everything */
-               l_gpio_data[gpio].state = STATE_PREAMBLE;
-               l_gpio_data[gpio].preamble = 0;
-               l_gpio_data[gpio].curbit = 0;
-               for (int x = 0;x < MAX_BITS;x++) {
-                   l_gpio_data[gpio].bits[x] = 0;
-               }
-           }
+                              /* 011 Speed and Direction Instruction for Forward Operation */
+                              case 0x60:
+                                printf(" direction F, speed (28ss) %s", two_eight_speeds[l_gpio_data[gpio].bits[i] & 0x1F]);
+                                break;
 
-       /* Does it seem to be not in any valid range? */
-       } else {
-           l_gpio_data[gpio].dcc_bad++;
+                              /* 100 Function Group One Instruction */
+                              case 0x80:
+                                printf(" F0=%c, F1=%c, F2=%c, F3=%c, F4=%c",
+                                       (l_gpio_data[gpio].bits[i] & 0x10) == 0x10 ? '1' : '0',
+                                       (l_gpio_data[gpio].bits[i] & 0x01) == 0x01 ? '1' : '0',
+                                       (l_gpio_data[gpio].bits[i] & 0x02) == 0x02 ? '1' : '0',
+                                       (l_gpio_data[gpio].bits[i] & 0x04) == 0x04 ? '1' : '0',
+                                       (l_gpio_data[gpio].bits[i] & 0x08) == 0x08 ? '1' : '0');
+                                break;
 
-           printf("Ticks not in valid range, got %d.\n", difference);
+                               /* 101 Function Group Two Instruction */
+                              case 0xA0:
+                                printf(" F5=%c, F6=%c, F7=%c, F8=%c, F9=%c, F10=%c, F11=%c, F12=%c",
+                                       (l_gpio_data[gpio].bits[i] & 0x11) == 0x11 ? '1' : '0',
+                                       (l_gpio_data[gpio].bits[i] & 0x12) == 0x12 ? '1' : '0',
+                                       (l_gpio_data[gpio].bits[i] & 0x14) == 0x14 ? '1' : '0',
+                                       (l_gpio_data[gpio].bits[i] & 0x18) == 0x18 ? '1' : '0',
+                                       (l_gpio_data[gpio].bits[i] & 0x01) == 0x01 ? '1' : '0',
+                                       (l_gpio_data[gpio].bits[i] & 0x02) == 0x02 ? '1' : '0',
+                                       (l_gpio_data[gpio].bits[i] & 0x04) == 0x04 ? '1' : '0',
+                                       (l_gpio_data[gpio].bits[i] & 0x08) == 0x08 ? '1' : '0');
+                                break;
 
-           /* Reset everything */
-           l_gpio_data[gpio].state = STATE_PREAMBLE;
-           l_gpio_data[gpio].preamble = 0;
-           l_gpio_data[gpio].curbit = 0;
-           for (int x = 0;x < MAX_BITS;x++) {
-               l_gpio_data[gpio].bits[x] = 0;
-           }
-       }
-   }
+                              /* 110 Future Expansion */
+                              case 0xC0:
+                                printf(" Future Expansion");
+                                break;
+
+                              /* 111 Configuration Variable Access Instruction */
+                              case 0xE0:
+                                switch (l_gpio_data[gpio].bits[i] & 0x10) {
+                                  case 0x00: /* All */
+                                    switch (l_gpio_data[gpio].bits[i] & 0xC0) {
+                                      case 0x00: /* Reserved */
+                                      case 0x40: /* Verify Byte */
+                                        printf(" Verify CV %d=%d", ((l_gpio_data[gpio].bits[i] & 0x3) << 8) + l_gpio_data[gpio].bits[i+1], l_gpio_data[gpio].bits[i+2]);
+                                        break;
+                                      case 0x80: /* Write Byte */
+                                        printf(" Write CV %d=%d", ((l_gpio_data[gpio].bits[i] & 0x3) << 8) + l_gpio_data[gpio].bits[i+1], l_gpio_data[gpio].bits[i+2]);
+                                        break;
+                                      case 0xC0: /* Bit Manipulation */
+                                        switch (l_gpio_data[gpio].bits[i+2] & 0x10) {
+                                          case 0x00: /* Verify Bit */
+                                            printf(" Verify CV %d bit %d value %d", ((l_gpio_data[gpio].bits[i] & 0x3) << 8) + l_gpio_data[gpio].bits[i+1], l_gpio_data[gpio].bits[i+2] & 0x7, l_gpio_data[gpio].bits[i+2] & 0x8 >> 3);
+                                            break;
+                                          case 0x10: /* Write Bit */
+                                            printf(" Verify CV %d bit %d value %d", ((l_gpio_data[gpio].bits[i] & 0x3) << 8) + l_gpio_data[gpio].bits[i+1], l_gpio_data[gpio].bits[i+2] & 0x7, l_gpio_data[gpio].bits[i+2] & 0x8 >> 3);
+                                            break;
+                                        }
+                                        break;
+                                    }
+                                    i++; i++;
+                                    break;
+                                  case 0x10: /* Limited */
+                                    switch (l_gpio_data[gpio].bits[i] & 0xF) {
+                                      case 0x00: /* Not available */
+                                        printf(" Configuration Variable Short Form Instruction Not Available");
+                                        break;
+                                      case 0x02: /* CV#23 Acceleration Value */
+                                        printf(" Set CV23=%d", l_gpio_data[gpio].bits[i+1]);
+                                        break;
+                                      case 0x03: /* CV#24 Acceleration Value */
+                                        printf(" Set CV24=%d", l_gpio_data[gpio].bits[i+1]);
+                                        break;
+                                      case 0x09: /* S-9.2.3 Appendix B */
+                                        printf(" Configuration Variable S-9.2.3 Appendix B");
+                                        break;
+                                    }
+                                    i++;
+                                    break;
+                                }
+                                break;
+
+                              default:
+                                printf("Unhandled case [%x]", l_gpio_data[gpio].bits[i]);
+                            }
+                        }
+                        printf("\n");
+                        break;
+
+                      default:
+                        /* We did not know how to decode, print packet in hex */
+                        printf("%d bytes:", l_gpio_data[gpio].curbit / 9);
+                        /* 9th byte 1 means end packet */
+                        for (uint32_t x = 0; x < l_gpio_data[gpio].curbit / 9; x++) {
+                            printf(" %02X", l_gpio_data[gpio].bits[x]);
+                        }
+                        putchar('\n');
+
+                    }
+
+                    /* Reset everything */
+                    l_gpio_data[gpio].state = STATE_PREAMBLE;
+                    l_gpio_data[gpio].preamble = 0;
+                    l_gpio_data[gpio].curbit = 0;
+                    for (uint32_t x = 0; x < MAX_BITS; x++) {
+                        l_gpio_data[gpio].bits[x] = 0;
+                    }
+                } 
+                break;
+
+              default:
+                /* The state variable didn't match one of our FSM states! Reset everything and hope
+                 * we can restart. */
+                printf("FSM in an unknown state %d.\n", l_gpio_data[gpio].state);
+
+                /* Reset everything */
+                l_gpio_data[gpio].state = STATE_PREAMBLE;
+                l_gpio_data[gpio].preamble = 0;
+                l_gpio_data[gpio].curbit = 0;
+                for (uint32_t x = 0; x < MAX_BITS; x++) {
+                    l_gpio_data[gpio].bits[x] = 0;
+                }
+            }
+
+        /* Was not in range to be a DCC zero or one, record as a bad interval and start over. */
+        } else {
+            l_gpio_data[gpio].dcc_bad++;
+            /* printf("Ticks not in valid range, got %d.\n", difference); */
+
+            /* Reset everything */
+            l_gpio_data[gpio].state = STATE_PREAMBLE;
+            l_gpio_data[gpio].preamble = 0;
+            l_gpio_data[gpio].curbit = 0;
+            for (int x = 0; x < MAX_BITS; x++) {
+                l_gpio_data[gpio].bits[x] = 0;
+            }
+        }
+    }
 }
+
+/* Program entry point. */
 
 int main(int argc, char *argv[])
 {
-   int i, rest, g, mode;
+    int i, rest, g, mode;
 
-   /* command line parameters */
+    /* Parse command line paramters. */
+    rest = initOpts(argc, argv);
 
-   rest = initOpts(argc, argv);
+    /* Set our GPIO counter to zero. */
+    g_num_gpios = 0;
 
-   /* get the gpios to monitor */
+    /* Loop through the left over command line arguments, assume they are GPIO numbers to monitor. */
+    for (i = rest; i < argc; i++) {
+        g = atoi(argv[i]);
+        if ((g >= 0) && (g < 32)) {
+            g_gpio[g_num_gpios++] = g;
+            g_mask |= (1 << g);
+        } else {
+            fatal(1, "%d is not a valid g_gpio number\n", g);
+        }
+    }
+    if (!g_num_gpios) {
+        fatal(1, "At least one gpio must be specified");
+    }
 
-   g_num_gpios = 0;
+    /* Print out a summary of what we're monitoring and the paramters. */
+    printf("Monitoring gpios");
+    for (i = 0; i < g_num_gpios; i++) {
+        printf(" %d", g_gpio[i]);
+    }
+    printf("\nSample rate %d micros, refresh rate %d deciseconds\n", g_opt_s, g_opt_r);
 
-   for (i=rest; i<argc; i++)
-   {
-      g = atoi(argv[i]);
-      if ((g>=0) && (g<32))
-      {
-         g_gpio[g_num_gpios++] = g;
-         g_mask |= (1<<g);
-      }
-      else fatal(1, "%d is not a valid g_gpio number\n", g);
-   }
 
-   if (!g_num_gpios) fatal(1, "At least one gpio must be specified");
+    /* Set the PiGPIO library timer based on the user's input. */
+    gpioCfgClock(g_opt_s, 1, 1);
 
-   printf("Monitoring gpios");
-   for (i=0; i<g_num_gpios; i++) printf(" %d", g_gpio[i]);
-   printf("\nSample rate %d micros, refresh rate %d deciseconds\n",
-      g_opt_s, g_opt_r);
+    /* Initialize the PiGPIO library. */
+    if (gpioInitialise() < 0) {
+        return 1;
+    }
 
-   gpioCfgClock(g_opt_s, 1, 1);
+    /* Configure the PiGPIO library to mointor g_gpio level changes */
+    mode = PI_INPUT;
+    for (i = 0; i < g_num_gpios; i++) {
+        gpioSetAlertFunc(g_gpio[i], edges);
+        gpioSetMode(g_gpio[i], mode);
+    }
 
-   if (gpioInitialise()<0) return 1;
+    /* Wait around forever, as the PiGPIO stuff is interrupt driven. */
+    while (1) {
+        /* Every opt-r * 1000000 ticks report status */
+        gpioDelay(g_opt_r * 1000000);
 
-   /* monitor g_gpio level changes */
-   for (i=0; i<g_num_gpios; i++) gpioSetAlertFunc(g_gpio[i], edges);
-
-   mode = PI_INPUT;
-
-   for (i=0; i<g_num_gpios; i++) gpioSetMode(g_gpio[i], mode);
-
-   while (1)
-   {
-      gpioDelay(g_opt_r * 1000000);
-
-      for (i=0; i<g_num_gpios; i++)
-      {
-         g = g_gpio[i];
-         g_gpio_data[g] = l_gpio_data[g];
+        /* ...once for each GPIO being monitored. */
+        for (i = 0; i < g_num_gpios; i++) {
+            g = g_gpio[i];
+            g_gpio_data[g] = l_gpio_data[g];
 
 /*
-         printf("Timing Data Dump Follows\n");
-         for (int x = 0;x < 512;x++) {
-             printf("t=%d\t%d\n", x, timing_data[x]);
-         }
+            printf("Timing Data Debug Dump Follows\n");
+            for (int x = 0;x < 512;x++) {
+                printf("t=%d\t%d\n", x, timing_data[x]);
+            }
  */
-         if (g_gpio_data[g].dcc_one > 0 || g_gpio_data[g].dcc_zero > 0) {
-             printf("g=%d %8d %8d %8d\n", g, g_gpio_data[g].dcc_one, 
-                    g_gpio_data[g].dcc_zero, g_gpio_data[g].dcc_bad);
-         }
-         l_gpio_data[g].dcc_one = 0;
-         l_gpio_data[g].dcc_zero = 0;
-         l_gpio_data[g].dcc_bad = 0;
-      }
-   }
+            /* Print how many DCC symbols we received and reset their counters. */
+            if (g_gpio_data[g].dcc_one > 0 || g_gpio_data[g].dcc_zero > 0) {
+                printf("GPIO %d: %8d dcc ones, %8d dcc zeros, %8d unparseable intervals\n", g, g_gpio_data[g].dcc_one,
+                       g_gpio_data[g].dcc_zero, g_gpio_data[g].dcc_bad);
+            }
+            l_gpio_data[g].dcc_one = 0;
+            l_gpio_data[g].dcc_zero = 0;
+            l_gpio_data[g].dcc_bad = 0;
+        }
+    }
 
-   gpioTerminate();
+    /* We currently have no way to get here... */
+    gpioTerminate();
 }
-
