@@ -125,14 +125,18 @@ static int g_gpio[MAX_GPIOS];
 
 static int g_opt_r = OPT_R_DEF;
 static int g_opt_s = OPT_S_DEF;
+static int g_opt_t = 0;
+static int g_opt_d = 0;
 
 void usage()
 {
     fprintf(stderr,
             "\n" \
             "Usage: sudo ./dcc_decode gpio ... [OPTION] ...\n" \
-            "   -r value, sets refresh period in deciseconds, %d-%d, default %d\n" \
-            "   -s value, sets sampling rate in micros, %d-%d, default %d\n" \
+            "   -t Print timing debug data\n" \
+            "   -d Print dcc bits debug data\n" \
+            "   -r value, sets report period in seconds (for -t and -d), %d-%d, default %d\n" \
+            "   -s value, sets gpio sampling rate in micros, %d-%d, default %d\n" \
             "\nEXAMPLE\n" \
             "sudo ./dcc_decode 4 -r10 -s1\n" \
             "Monitor gpio 4.  Refresh every 0.1 seconds.  Sample rate 1 micros.\n" \
@@ -165,10 +169,16 @@ static int initOpts(int argc, char *argv[])
 {
     int i, opt;
 
-    while ((opt = getopt(argc, argv, "p:r:s:")) != -1) {
+    while ((opt = getopt(argc, argv, "tdr:s:")) != -1) {
         i = -1;
 
         switch (opt) {
+          case 't':
+            g_opt_t = 1;
+            break;
+          case 'd':
+            g_opt_d = 1;
+            break;
           case 'r':
             i = atoi(optarg);
             if ((i >= OPT_R_MIN) && (i <= OPT_R_MAX))
@@ -662,20 +672,25 @@ int main(int argc, char *argv[])
             g = g_gpio[i];
             g_gpio_data[g] = l_gpio_data[g];
 
-/*
-            printf("Timing Data Debug Dump Follows\n");
-            for (int x = 0;x < 512;x++) {
-                printf("t=%d\t%d\n", x, timing_data[x]);
+            /* Print timing data if the user requested. */
+            if (g_opt_t) {
+                printf("DEBUG: Timing Data Dump Follows\n");
+                for (int x = 0;x < 512;x++) {
+                    printf("DEBUG: ticks=%d\t%d\n", x, timing_data[x]);
+                }
             }
- */
-            /* Print how many DCC symbols we received and reset their counters. */
-            if (g_gpio_data[g].dcc_one > 0 || g_gpio_data[g].dcc_zero > 0) {
-                printf("GPIO %d: %8d dcc ones, %8d dcc zeros, %8d unparseable intervals\n", g, g_gpio_data[g].dcc_one,
-                       g_gpio_data[g].dcc_zero, g_gpio_data[g].dcc_bad);
+
+            /* If the user requested, print how many DCC symbols we received and reset their counters. */
+            if (g_opt_d) {
+                if (g_gpio_data[g].dcc_one > 0 || g_gpio_data[g].dcc_zero > 0) {
+                    printf("DEBUG: GPIO %d: %8d dcc ones, %8d dcc zeros, %8d unparseable intervals\n", g, g_gpio_data[g].dcc_one,
+                           g_gpio_data[g].dcc_zero, g_gpio_data[g].dcc_bad);
+                }
+
+                l_gpio_data[g].dcc_one = 0;
+                l_gpio_data[g].dcc_zero = 0;
+                l_gpio_data[g].dcc_bad = 0;
             }
-            l_gpio_data[g].dcc_one = 0;
-            l_gpio_data[g].dcc_zero = 0;
-            l_gpio_data[g].dcc_bad = 0;
         }
     }
 
