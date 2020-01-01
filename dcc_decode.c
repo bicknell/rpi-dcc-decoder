@@ -332,6 +332,7 @@ void edges(int gpio, int level, uint32_t tick)
                             printf("4-byte Checksum fails.\n");
                             break;
                         }
+                        goto decode_packet;
 
                       /* Four byte message + checksum. */
                       case 5:
@@ -339,6 +340,7 @@ void edges(int gpio, int level, uint32_t tick)
                             printf("5-byte Checksum fails.\n");
                             break;
                         }
+                        goto decode_packet;
 
                       /* Five byte message + checksum. */
                       case 6:
@@ -347,12 +349,11 @@ void edges(int gpio, int level, uint32_t tick)
                             break;
                         }
 
-
-                        
                         uint16_t address;
                         uint16_t address_bits;
                         uint16_t instructions;
 
+                      decode_packet: /* Yes, there are two gotos above. */                        
                         /* Decode the address */
                         if ((l_gpio_data[gpio].bits[0] & 0xC0) == 0xC0) {
                             address = l_gpio_data[gpio].bits[1] | ((l_gpio_data[gpio].bits[0] & 0x3F) << 8);
@@ -573,7 +574,7 @@ void edges(int gpio, int level, uint32_t tick)
 
                     }
 
-                    /* Reset everything */
+                    /* Message has been parsed, reset everything. */
                     l_gpio_data[gpio].state = STATE_PREAMBLE;
                     l_gpio_data[gpio].preamble = 0;
                     l_gpio_data[gpio].curbit = 0;
