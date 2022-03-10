@@ -37,18 +37,11 @@ A 1.3K resistor is not a typical value in most kits.  If using Z/N/HO voltages
 a 1K resistor provides a good range, and if doing O/G/Garden a 2K resistor
 provides a good range.
 
-## Adafruit makes it easy!
-
-Adafruit has a "Cobbler" board: https://www.adafruit.com/product/2028
-
-This product makes it extremely easy to interface an RPI with a breadboard.
-Plug the circuit board into any standard bread board, connect the cable from
-it to the RPI pin-header.  It's that easy!
-
 ## New to hardware hacking?
 
 Some recommendations for starting out:
 
 * [Raspberry Pi Breadboard Adapter](https://www.amazon.com/gp/product/B07DK8DVBV)
 * [Electronics Component Kit](https://www.amazon.com/gp/product/B073ZC68QG)
-* [Additional Opto-Isolators](https://www.amazon.com/gp/product/B00B88AOS6)
+* [4N35](https://www.amazon.com/gp/product/B00B88AOS6)
+* [6N137](https://www.amazon.com/gp/product/B00B88AQO8)
