@@ -3,24 +3,47 @@
 
 ![schematic](schematic.png)
 
+Full source to the schematic is also in the KiCad directory.
+
 ## Description
 
-Power from the rails is fed into a pair of 4N35 opto-isolators to keep the 
-Raspberry Pi isolated from the track power.  Two isolators are used wired
-in an inverted arrangement.  Only one is necessary for a basic decoder, this
-arrangement allows decoding of both the positve and inverted signal.  It is
-also necessary to properly detect AC or DC on the rails, if that is desired.
+The schematic shows interfacing with the RPI two different ways using
+commonly available opto-isolators.  The first example uses a 4N35, often
+included in various electronics tinkering kits.  The second example uses
+a slightly newer and better 6N137 device.  Both work nearly the same.
 
-Each input uses a 1K ohm resistor to drop the voltage for the diode in the 
-opto-isolator.  A 1N4007 dioed is also wired in the reverse orientation from
-the opto-isolator to sink any reverse current, preventing an over-voltage
-situation in the reverse direction on the opto-isolator.
+Power from the rails is fed into the front end of the opto-isolator.  A
+resistor (R1) is used to limit current, a diode (D1) is used to provide
+reverse polarity protection, and optionally a capacitor (C1) can reduce
+ringing on the input from noisy DCC supplies.
 
-On the Raspberry Pi side, a 10K ohm resistor is used as a positive pull up
-on the collector, and is wired to the 3.3v supply of the Raspberry Pi.  The
-emitter is wired to the ground on the Raspberry Pi.  The base of the 
-opto-isolator is not connected in this circuit.  Each collector is then wired
-to a GPIO pin on the Raspberry Pi as the signal input.
+The output of the opto-isolator is wired to a GPIO pin on the Raspberry Pi.
+This requires connections to ground, the GPIO pin, and power.  For the 4N35
+part a single pull up resistor is all that is required.  For the 6N137 in
+addition to a pull up for the signal pin one is required on the ENable pin,
+and the device also needs the 3.3v power input.
+
+The only particular critical value is R1, the current limiting resistor.
+The opto-isolators recommand 5ma to 20ma current, and the ideal situation
+is to support DCC voltages from around 8v (2v below Z scale) to 26 volts
+(2v above garden scale).
+
+Ohms law tells us Current (I) = Voltage (V) / Resistance (R):
+
+- 26v / 1.3K = 20ma
+- 8v / 1.3K = 6.15ma
+
+A 1.3K resistor is not a typical value in most kits.  If using Z/N/HO voltages
+a 1K resistor provides a good range, and if doing O/G/Garden a 2K resistor
+provides a good range.
+
+## Adafruit makes it easy!
+
+Adafruit has a "Cobbler" board: https://www.adafruit.com/product/2028
+
+This product makes it extremely easy to interface an RPI with a breadboard.
+Plug the circuit board into any standard bread board, connect the cable from
+it to the RPI pin-header.  It's that easy!
 
 ## New to hardware hacking?
 
